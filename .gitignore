@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+desk/cache/
+desk/state/
+desk/no_trades/
+desk/scan_latest.json*
+desk/signals.jsonl
+desk/friday_hints*.jsonl
+desk/.scanner_run.lock
