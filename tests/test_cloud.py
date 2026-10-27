@@ -36,7 +36,7 @@ os.environ["DESK_ENTRIES_SUSPENDED"] = "1"; ok("SUSPENDED" in C.cloud_gates(ts("
 os.environ.pop("DESK_ENTRIES_SUSPENDED")
 ok(H.gates is C.cloud_gates and H.process is C.cloud_process, "head_alert gates/process swapped in-process")
 
-# ---- 3. sender: source=cloud, 1 per SYM+dir per Rome day, dry run never POSTs, secrets never printed ----
+# ---- 3. sender: source=cloud, 1 per SYM+dir per 2 h (owner 27/10, per-day rule removed), dry run never POSTs, secrets never printed ----
 tmp = tempfile.mkdtemp(); C.SENT = os.path.join(tmp, "sent.jsonl"); C.DRYF = os.path.join(tmp, "dry.jsonl")
 posted = []
 def fake_post(p): posted.append(p); return 200, "header=Authorization"
@@ -48,9 +48,14 @@ p = {"setup_type": "B", "risk_pct": 1.5, "symbol": "PF_ZROUSD", "dir": "short", 
 now = ts("2026-10-27 12:37:20")
 r = C.cloud_process([p], now); ok(len(posted) == 1 and posted[0]["source"] == "cloud" and posted[0]["filter_ver"] == "2026-10-27a", f"payload carries source=cloud + filter_ver ({r})")
 ok(set(posted[0]) - set(p) == {"source", "filter_ver"}, "payload = desk payload + 2 fields only")
-r = C.cloud_process([p, dict(p, dir="long")], ts("2026-10-27 18:10:20"))
-ok(len(posted) == 2 and posted[-1]["dir"] == "long" and "already sent today" in r, f"same SYM+dir later the same day -> skipped, other dir sent ({r})")
-r = C.cloud_process([p], ts("2026-10-28 09:00:20")); ok(len(posted) == 3, "next Rome day -> allowed again")
+r = C.cloud_process([p, dict(p, dir="long")], ts("2026-10-27 13:30:20"))
+ok(len(posted) == 2 and posted[-1]["dir"] == "long" and "cloud sent <2h ago" in r, f"same SYM+dir 53 min later -> skipped, other dir sent ({r})")
+r = C.cloud_process([p], ts("2026-10-27 14:32:20")); ok(len(posted) == 2 and "cloud sent <2h ago" in r, f"same SYM+dir 1h55 later -> still skipped ({r})")
+r = C.cloud_process([p], ts("2026-10-27 14:37:20")); ok(len(posted) == 3 and posted[-1]["symbol"] == "PF_ZROUSD", f"same SYM+dir exactly 2h later, same Rome day -> alerts again ({r})")
+r = C.cloud_process([p], ts("2026-10-27 15:00:20")); ok(len(posted) == 3, "2h window restarts from the latest alert (14:37) -> 15:00 skipped")
+r = C.cloud_process([p], ts("2026-10-27 16:37:20")); ok(len(posted) == 4, "16:37 (2h after 14:37) -> allowed")
+r = C.cloud_process([p], ts("2026-10-28 09:00:20")); ok(len(posted) == 5, "next Rome day -> allowed")
+ok(len(open(C.SENT).read().splitlines()) == 5 and json.loads(open(C.SENT).read().splitlines()[2])["ts_unix"] == ts("2026-10-27 14:37:20"), "ledger ts = scan time")
 H.post = lambda p_: (_ for _ in ()).throw(AssertionError("POST in dry run")); C.DRY = True
 C.SENT = os.path.join(tmp, "sent2.jsonl"); r = C.cloud_process([dict(p, symbol="PF_NEARUSD")], now)
 ok(json.loads(open(C.DRYF).read().splitlines()[-1])["symbol"] == "PF_NEARUSD", "dry run: payload recorded, H.post never called")

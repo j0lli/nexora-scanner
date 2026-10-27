@@ -6,8 +6,9 @@ FILTER_VER 2026-10-27a) and only swaps the parts that need private box data:
     neither, so here the gate is desk hours only (Mon-Fri 08:00-23:00 Europe/Rome) plus an optional repository
     variable DESK_ENTRIES_SUSPENDED=1. The daily -4% / +1.6% gates, suspension and the "max 1 open Type B" check
     are re-applied on the box when the alert arrives (payload carries source="cloud").
-  * sender: payload gets "source":"cloud" and "filter_ver"; one alert per SYMBOL+direction per Rome day
-    (ledger desk/state/cloud_sent.jsonl, kept across blocks with actions/cache). CLOUD_DRY_RUN=1 never POSTs.
+  * sender: payload gets "source":"cloud" and "filter_ver"; the same SYMBOL+direction can alert again once at least
+    2 h (H.DEDUP_SEC) have passed since its last cloud alert (owner 27/10: per-day rule removed). Ledger
+    desk/state/cloud_sent.jsonl, kept across blocks with actions/cache. CLOUD_DRY_RUN=1 never POSTs.
   * stdout: the scanner's own summary line is printed without the equity figure (public Actions logs).
 
 Every score / R:R / Type A-B / filter function is the desk's own code, imported as-is. No Kraken keys, no orders.
@@ -41,13 +42,14 @@ def cloud_gates(now, *_a, **_k):
     return None
 
 
-def sent_today(now):
-    day, out = rome_day(now), set()
+def sent_recent(now, window=None):
+    """SYM+dir pairs whose last cloud alert is less than `window` (default H.DEDUP_SEC = 2 h) before `now`."""
+    window, out = H.DEDUP_SEC if window is None else window, set()
     if os.path.exists(SENT):
         for line in open(SENT):
             try: r = json.loads(line)
             except Exception: continue
-            if r.get("day") == day: out.add((r["symbol"], r["dir"]))
+            if 0 <= now - float(r.get("ts_unix", 0)) < window: out.add((r["symbol"], r["dir"]))
     return out
 
 
@@ -59,22 +61,26 @@ def cloud_sender(p):
     else:
         code, note = H.post(payload)          # desk's own POST: https only, Bearer / X-Webhook-Key, 5 s timeout
     if code is not None and 200 <= code < 300:
+        t = _NOW[0] or time.time()
         with open(SENT, "a") as f:
-            f.write(json.dumps({"day": rome_day(time.time()), "ts_unix": int(time.time()), "symbol": p["symbol"],
+            f.write(json.dumps({"day": rome_day(t), "ts_unix": int(t), "symbol": p["symbol"],
                                 "dir": p["dir"], "setup_type": p["setup_type"], "dry_run": DRY}) + "\n")
     return code, note
 
 
 _orig_process = H.process
+_NOW = [None]   # scan timestamp of the cloud_process call in progress (ledger time = scan time, testable)
 
 
 def cloud_process(hits, now=None, loader=H._candles, sender=None, log=print):
-    """Same H.process (same qualify/B limits/2h dedup), with the cloud sender and the 1-per-day SYM+dir rule."""
-    now = now or time.time(); done = sent_today(now)
+    """Same H.process (same qualify/B limits/2h dedup), with the cloud sender and the 1-per-2h SYM+dir rule."""
+    now = now or time.time(); done = sent_recent(now)
     keep = [h for h in hits if (h.get("symbol"), h.get("dir")) not in done]
-    dup = [f"{h['symbol'].replace('PF_', '')}:{h['dir'][0]}:skip[cloud already sent today]" for h in hits
+    dup = [f"{h['symbol'].replace('PF_', '')}:{h['dir'][0]}:skip[cloud sent <2h ago]" for h in hits
            if (h.get("symbol"), h.get("dir")) in done and h.get("setup_type") in ("A", "B")]
-    r = _orig_process(keep, now, loader, cloud_sender, log)
+    _NOW[0] = now
+    try: r = _orig_process(keep, now, loader, cloud_sender, log)
+    finally: _NOW[0] = None
     return r + (f" {dup}" if dup else "")
 
 
