@@ -62,7 +62,9 @@ jobs:
       CLOUD_DRY_RUN: ${{ github.event.inputs.dry_run || '0' }}
       CLOUD_MAX_SCANS: ${{ github.event.inputs.max_scans }}
       DESK_ENTRIES_SUSPENDED: ${{ vars.DESK_ENTRIES_SUSPENDED }}
-      DESK_EQUITY: ${{ vars.DESK_EQUITY }}
+      # An unset repo variable is exported as "". scanner.py does float(os.environ.get("DESK_EQUITY", "34.80")),
+      # and a present empty string skips that default (ValueError on import). Use the same 34.80 fallback.
+      DESK_EQUITY: ${{ vars.DESK_EQUITY || '34.80' }}
     steps:
       - name: Record job start
         run: echo "CLOUD_JOB_START_UNIX=$(date +%s)" >> "$GITHUB_ENV"
