@@ -62,6 +62,9 @@ jobs:
       CLOUD_DRY_RUN: ${{ github.event.inputs.dry_run || '0' }}
       CLOUD_MAX_SCANS: ${{ github.event.inputs.max_scans }}
       DESK_ENTRIES_SUSPENDED: ${{ vars.DESK_ENTRIES_SUSPENDED }}
+      # 2026-10-28 pre-filter modes (unset repo variable = "" -> prefilter defaults: F1/F2 shadow, F3 on)
+      DESK_PREFILTER: ${{ vars.DESK_PREFILTER }}
+      DESK_PREFILTER_F3: ${{ vars.DESK_PREFILTER_F3 }}
       # An unset repo variable is exported as "". scanner.py does float(os.environ.get("DESK_EQUITY", "34.80")),
       # and a present empty string skips that default (ValueError on import). Use the same 34.80 fallback.
       DESK_EQUITY: ${{ vars.DESK_EQUITY || '34.80' }}

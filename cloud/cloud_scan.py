@@ -25,9 +25,11 @@ ROME = ZoneInfo("Europe/Rome")
 DRY = os.environ.get("CLOUD_DRY_RUN", "0") == "1"
 
 import head_alert as H  # noqa: E402  (unchanged desk module)
+import prefilter as PF  # noqa: E402  (2026-10-28 scanner pre-filter, separate module)
 
 SENT = os.path.join(H.STATE, "cloud_sent.jsonl")
 DRYF = os.path.join(H.STATE, "cloud_dryrun_payloads.jsonl")
+PF_LOG = os.path.join(H.STATE, "prefilter_shadow.jsonl")   # 2026-10-28 pre-filter verdict log
 os.makedirs(H.STATE, exist_ok=True); os.makedirs(H.CACHE, exist_ok=True)
 
 
@@ -74,7 +76,13 @@ _NOW = [None]   # scan timestamp of the cloud_process call in progress (ledger t
 
 def cloud_process(hits, now=None, loader=H._candles, sender=None, log=print):
     """Same H.process (same qualify/B limits/2h dedup), with the cloud sender and the 1-per-2h SYM+dir rule."""
-    now = now or time.time(); done = sent_recent(now)
+    now = now or time.time()
+    # 2026-10-28 pre-filter (desk/prefilter.py, owner 28/10): F3 = no alerts from 22:30 Rome (real block); F1 4H structural
+    # stop + F2 1H counter-move = SHADOW (verdict printed in the workflow output + desk/state/prefilter_shadow.jsonl, never drops).
+    # Modes: repo variables DESK_PREFILTER (F1/F2, default shadow) / DESK_PREFILTER_F3 (default on). Fail-open on any error.
+    try: hits = PF.filter_hits(hits, now, loader, log_path=PF_LOG, log=print)
+    except Exception: pass
+    done = sent_recent(now)
     keep = [h for h in hits if (h.get("symbol"), h.get("dir")) not in done]
     dup = [f"{h['symbol'].replace('PF_', '')}:{h['dir'][0]}:skip[cloud sent <2h ago]" for h in hits
            if (h.get("symbol"), h.get("dir")) in done and h.get("setup_type") in ("A", "B")]

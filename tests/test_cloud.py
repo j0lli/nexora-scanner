@@ -38,6 +38,7 @@ ok(H.gates is C.cloud_gates and H.process is C.cloud_process, "head_alert gates/
 
 # ---- 3. sender: source=cloud, 1 per SYM+dir per 2 h (owner 27/10, per-day rule removed), dry run never POSTs, secrets never printed ----
 tmp = tempfile.mkdtemp(); C.SENT = os.path.join(tmp, "sent.jsonl"); C.DRYF = os.path.join(tmp, "dry.jsonl")
+C.PF_LOG = os.path.join(tmp, "prefilter_shadow.jsonl")   # 2026-10-28: pre-filter verdicts of these tests stay in tmp
 posted = []
 def fake_post(p): posted.append(p); return 200, "header=Authorization"
 H.post = fake_post; C.DRY = False
@@ -80,4 +81,29 @@ for start, end in (("2026-10-27 07:55:00", "2026-10-27 13:00"), ("2026-10-27 09:
     ok(got == end and e - ts(start) <= 340 * 60, f"start {start} {datetime.fromtimestamp(ts(start), R):%Z} -> block end {got}")
 ok(L.block_end(ts("2026-10-27 07:00:00"), 340) - ts("2026-10-27 07:00:00") == 340 * 60, "never longer than CLOUD_MAX_MINUTES (340 < 360 GitHub limit)")
 s = L.next_slot(ts("2026-10-27 12:37:26")); ok(datetime.fromtimestamp(s, R).strftime("%H:%M:%S") == "12:40:20", "slots = box slots (5 min + 20 s)")
+# ---- 2026-10-28 pre-filter inside cloud_process: F3 22:30 cutoff = real block, F1/F2 = shadow (never drop) ----
+import numpy as np, prefilter as PF
+for k in ("DESK_PREFILTER", "DESK_PREFILTER_F3"): os.environ.pop(k, None)
+H.post = lambda p_: (_ for _ in ()).throw(AssertionError("POST in dry run")); C.DRY = True
+C.SENT = os.path.join(tmp, "sent3.jsonl"); C.PF_LOG = os.path.join(tmp, "pf3.jsonl")
+def _bars(tf, highs, end):
+    sec = PF.TF[tf]; t0 = (end // sec) * sec - len(highs) * sec
+    return np.array([[t0 + k * sec, x - .5, x, x - 1, x - .5, 1] for k, x in enumerate(highs)], float)
+t13 = ts("2026-10-27 13:00:20")
+bad_ld = lambda s, tf: _bars("4h", [1.6, 1.6, 1.70, 1.6, 1.6, 1.6, 1.6, 1.6], t13) if tf == "4h" else _bars("1h", [1.6] * 7 + [1.67], t13)
+q = dict(p, symbol="PF_SOLUSD", entry=1.66, stop=1.69)
+out = io.StringIO()
+with contextlib.redirect_stdout(out): C.cloud_process([q], t13, bad_ld)
+rows = [json.loads(x) for x in open(C.PF_LOG)]
+ok(json.loads(open(C.DRYF).read().splitlines()[-1])["symbol"] == "PF_SOLUSD", "F1/F2 fail at 13:00 -> still alerted (shadow, never drop)")
+ok(rows[-1]["verdict"]["F1_struct"] == "FAIL" and rows[-1]["verdict"]["F2_counter"] == "FAIL" and not rows[-1]["dropped"], "shadow verdict F1/F2 FAIL logged")
+ok("prefilter SOLUSD:s F1=FAIL F2=FAIL F3=pass passed (F1/F2 shadow, F3 on)" in out.getvalue(), "shadow verdict printed to workflow output")
+n_dry = len(open(C.DRYF).read().splitlines())
+with contextlib.redirect_stdout(io.StringIO()): C.cloud_process([dict(q, symbol="PF_LTCUSD")], ts("2026-10-27 22:30:20"), bad_ld)
+ok(len(open(C.DRYF).read().splitlines()) == n_dry, "22:30 Rome -> blocked by F3 (no alert)")
+ok(json.loads(open(C.PF_LOG).read().splitlines()[-1])["dropped_by"] == ["F3_time"], "F3 drop logged")
+with contextlib.redirect_stdout(io.StringIO()): C.cloud_process([dict(q, symbol="PF_DOTUSD")], ts("2026-10-27 22:29:20"), bad_ld)
+ok(json.loads(open(C.DRYF).read().splitlines()[-1])["symbol"] == "PF_DOTUSD", "22:29 Rome -> still alerts")
+with contextlib.redirect_stdout(io.StringIO()): C.cloud_process([dict(q, symbol="PF_ADAUSD")], ts("2026-10-27 14:00:20"), lambda s, tf: 1 / 0)
+ok(json.loads(open(C.DRYF).read().splitlines()[-1])["symbol"] == "PF_ADAUSD", "pre-filter error -> fail-open (alert unchanged)")
 print(f"ALL {N} CLOUD TESTS PASSED")
